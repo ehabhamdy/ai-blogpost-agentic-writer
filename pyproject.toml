@@ -1,0 +1,14 @@
+[project]
+name = "ai-blogpost-agentic-writer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dotenv>=0.9.9",
+    "pydantic-ai-slim[logfire,openai]>=0.4.4",
+    "tavily-python>=0.3.0",
+    "httpx>=0.25.0",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
