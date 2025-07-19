@@ -28,29 +28,49 @@ class ResearchAgent:
             - Factual accuracy and source attribution
             - Relevance to the specific topic
             
-            IMPORTANT: Always follow this workflow:
-            1. First, use search_web to find information about the topic
-            2. Then, use extract_facts to process the search results into structured findings
-            3. Create a comprehensive ResearchOutput with all findings
-            
-            Use the available tools to search for information and extract structured findings."""
+            Use the comprehensive_research tool to gather all information about the topic.
+            This tool will handle web searching, fact extraction, categorization, and analysis automatically."""
         )
         
-        # Register tools
-        self.agent.tool(self.search_web)
-        self.agent.tool(self.extract_facts)
+        # Register the comprehensive research tool
+        self.agent.tool(self.comprehensive_research)
     
     async def research_topic(self, topic: str, deps: SharedDependencies) -> ResearchOutput:
         """Research a topic and return structured findings."""
         try:
+            result = await self.agent.run(
+                f"Research the topic: {topic}. Gather comprehensive information including facts, statistics, studies, and expert opinions.",
+                deps=deps
+            )
+            return result.data
+        except Exception as e:
+            # Retry with exponential backoff for recoverable errors
+            if "rate limit" in str(e).lower() or "timeout" in str(e).lower():
+                raise ModelRetry(f"Research failed due to API issues: {e}")
+            raise e
+    
+    async def comprehensive_research(
+        self, 
+        ctx: RunContext[SharedDependencies], 
+        topic: str
+    ) -> ResearchOutput:
+        """Comprehensive research tool that handles the entire research workflow.
+        
+        Args:
+            topic: The research topic to investigate
+            
+        Returns:
+            Complete ResearchOutput with findings, summary, and confidence level
+        """
+        try:
             # Step 1: Search for information
-            search_results = await self._search_web_internal(deps, topic)
+            search_results = await self._search_web(ctx.deps, topic)
             
             # Step 2: Extract facts from search results
-            findings = await self._extract_facts_internal(deps, search_results, topic)
+            findings = await self._extract_facts(ctx.deps, search_results, topic)
             
-            # Step 3: Create summary using AI
-            summary = await self._create_summary(deps, topic, findings)
+            # Step 3: Create summary
+            summary = self._create_summary(topic, findings)
             
             # Step 4: Calculate confidence level
             confidence_level = self._calculate_confidence(findings)
@@ -63,103 +83,21 @@ class ResearchAgent:
             )
             
         except Exception as e:
-            # Retry with exponential backoff for recoverable errors
+            # Handle errors gracefully
             if "rate limit" in str(e).lower() or "timeout" in str(e).lower():
                 raise ModelRetry(f"Research failed due to API issues: {e}")
-            raise e
-    
-    async def search_web(self, ctx: RunContext[SharedDependencies], query: str, max_results: int = 10) -> List[Dict[str, Any]]:
-        """Search the web for information using Tavily API.
-        
-        Args:
-            query: Search query string
-            max_results: Maximum number of results to return
             
-        Returns:
-            List of search results with title, content, and URL
-        """
-        try:
-            # Use Tavily client from dependencies
-            search_response = ctx.deps.tavily_client.search(
-                query=query,
-                search_depth="advanced",
-                max_results=max_results,
-                include_answer=True,
-                include_raw_content=False
+            # Return minimal result for other errors
+            return ResearchOutput(
+                topic=topic,
+                findings=[],
+                summary=f"Limited research data available for {topic} due to technical issues.",
+                confidence_level=0.1
             )
-            
-            results = []
-            for result in search_response.get('results', []):
-                results.append({
-                    'title': result.get('title', ''),
-                    'content': result.get('content', ''),
-                    'url': result.get('url', ''),
-                    'score': result.get('score', 0.0)
-                })
-            
-            return results
-            
-        except Exception as e:
-            if "rate limit" in str(e).lower():
-                raise ModelRetry(f"Tavily API rate limit exceeded: {e}")
-            elif "timeout" in str(e).lower():
-                raise ModelRetry(f"Tavily API timeout: {e}")
-            else:
-                # For other errors, return empty results rather than failing completely
-                return []
     
-    async def extract_facts(
-        self, 
-        ctx: RunContext[SharedDependencies], 
-        search_results: List[Dict[str, Any]], 
-        topic: str
-    ) -> List[ResearchFinding]:
-        """Extract structured facts from search results.
-        
-        Args:
-            search_results: Raw search results from web search
-            topic: The original research topic for relevance scoring
-            
-        Returns:
-            List of structured ResearchFinding objects
-        """
-        findings = []
-        
-        for result in search_results:
-            content = result.get('content', '')
-            url = result.get('url', '')
-            title = result.get('title', '')
-            
-            if not content or not url:
-                continue
-            
-            # Extract key facts from the content
-            # This is a simplified extraction - in practice, you might use more sophisticated NLP
-            sentences = content.split('. ')
-            
-            for sentence in sentences:
-                sentence = sentence.strip()
-                if len(sentence) < 20:  # Skip very short sentences
-                    continue
-                
-                # Determine category based on content patterns
-                category = self._categorize_finding(sentence)
-                
-                # Calculate relevance score based on topic keywords
-                relevance_score = self._calculate_relevance(sentence, topic)
-                
-                if relevance_score > 0.3:  # Only include reasonably relevant findings
-                    finding = ResearchFinding(
-                        fact=sentence,
-                        source_url=url,
-                        relevance_score=relevance_score,
-                        category=category
-                    )
-                    findings.append(finding)
-        
-        # Sort by relevance score and return top findings
-        findings.sort(key=lambda x: x.relevance_score, reverse=True)
-        return findings[:20]  # Limit to top 20 findings
+
+    
+
     
     def _categorize_finding(self, text: str) -> str:
         """Categorize a finding based on its content."""
@@ -202,7 +140,7 @@ class ResearchAgent:
         # Cap at 1.0
         return min(base_score, 1.0)
     
-    async def _search_web_internal(self, deps: SharedDependencies, topic: str) -> List[Dict[str, Any]]:
+    async def _search_web(self, deps: SharedDependencies, topic: str) -> List[Dict[str, Any]]:
         """Internal method to search the web for information."""
         try:
             # Use Tavily client from dependencies
@@ -234,7 +172,7 @@ class ResearchAgent:
                 # For other errors, return empty results rather than failing completely
                 return []
     
-    async def _extract_facts_internal(self, deps: SharedDependencies, search_results: List[Dict[str, Any]], topic: str) -> List[ResearchFinding]:
+    async def _extract_facts(self, deps: SharedDependencies, search_results: List[Dict[str, Any]], topic: str) -> List[ResearchFinding]:
         """Internal method to extract facts from search results."""
         findings = []
         
@@ -273,13 +211,10 @@ class ResearchAgent:
         findings.sort(key=lambda x: x.relevance_score, reverse=True)
         return findings[:20]  # Limit to top 20 findings
     
-    async def _create_summary(self, deps: SharedDependencies, topic: str, findings: List[ResearchFinding]) -> str:
-        """Create a summary of the research findings using AI."""
+    def _create_summary(self, topic: str, findings: List[ResearchFinding]) -> str:
+        """Create a summary of the research findings."""
         if not findings:
             return f"Limited research data available for {topic}."
-        
-        # Create a simple summary based on the findings
-        key_facts = [f.fact for f in findings[:5]]  # Top 5 most relevant facts
         
         summary_parts = [
             f"Research on {topic} reveals several key insights:",
@@ -294,15 +229,15 @@ class ResearchAgent:
         
         # Add category-based insights
         if 'statistic' in categories:
-            summary_parts.append(f"Statistical data shows important trends and measurements.")
+            summary_parts.append("Statistical data shows important trends and measurements.")
         if 'study' in categories:
-            summary_parts.append(f"Multiple studies provide evidence-based insights.")
+            summary_parts.append("Multiple studies provide evidence-based insights.")
         if 'expert_opinion' in categories:
-            summary_parts.append(f"Expert perspectives offer professional guidance.")
+            summary_parts.append("Expert perspectives offer professional guidance.")
         if 'benefit' in categories:
-            summary_parts.append(f"Research highlights significant benefits and advantages.")
+            summary_parts.append("Research highlights significant benefits and advantages.")
         if 'risk' in categories:
-            summary_parts.append(f"Important considerations and potential risks are identified.")
+            summary_parts.append("Important considerations and potential risks are identified.")
         
         return " ".join(summary_parts)
     
