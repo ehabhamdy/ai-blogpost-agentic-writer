@@ -8,6 +8,16 @@ from pydantic_ai.models import Model
 
 from ..models.data_models import BlogDraft, ResearchOutput, ResearchFinding
 from ..utils.dependencies import SharedDependencies
+from dataclasses import dataclass
+
+
+@dataclass
+class WritingContext:
+    """Context class that holds research data for the Writing Agent."""
+    topic: str
+    research_findings: List[ResearchFinding]
+    research_summary: str
+    research_confidence: float
 
 
 class WritingAgent:
@@ -44,18 +54,30 @@ class WritingAgent:
     ) -> BlogDraft:
         """Create a blog draft from research data."""
         try:
+            # Create a context that includes the research data
+            context = WritingContext(
+                topic=topic,
+                research_findings=research_data.findings,
+                research_summary=research_data.summary,
+                research_confidence=research_data.confidence_level
+            )
+            
             result = await self.agent.run(
                 f"""Create a comprehensive blog post about: {topic}
                 
-                Use the provided research data to create an engaging, well-structured blog post.
-                The post should be informative, well-organized, and incorporate the research findings naturally.
+                You have access to research data through the context. Use the structure_content tool 
+                to organize the research findings into a well-structured blog post.
                 
-                Research Summary: {research_data.summary}
-                Number of Research Findings: {len(research_data.findings)}
-                Research Confidence: {research_data.confidence_level}
+                The research includes {len(research_data.findings)} findings with a confidence level of {research_data.confidence_level:.2f}.
+                Research summary: {research_data.summary}
+                
+                Steps to follow:
+                1. Use structure_content tool to organize the research findings
+                2. Create an engaging blog post (800-1200 words) incorporating the structured content
+                3. Ensure proper flow between introduction, body sections, and conclusion
                 
                 Create a blog post that is approximately 800-1200 words.""",
-                deps=deps
+                deps=context
             )
             return result.data
         except Exception as e:
@@ -73,6 +95,14 @@ class WritingAgent:
     ) -> BlogDraft:
         """Revise a blog draft based on feedback."""
         try:
+            # Create a context that includes the research data
+            context = WritingContext(
+                topic=research_data.topic,
+                research_findings=research_data.findings,
+                research_summary=research_data.summary,
+                research_confidence=research_data.confidence_level
+            )
+            
             result = await self.agent.run(
                 f"""Revise the following blog post based on the provided feedback:
                 
@@ -83,9 +113,10 @@ class WritingAgent:
                 
                 Feedback to address: {feedback}
                 
-                Use the research data to support your revisions and ensure accuracy.
-                Maintain the overall structure while improving based on the feedback.""",
-                deps=deps
+                You have access to research data through the context. Use the available tools 
+                to support your revisions and ensure accuracy. Maintain the overall structure 
+                while improving based on the feedback.""",
+                deps=context
             )
             return result.data
         except Exception as e:
@@ -95,19 +126,20 @@ class WritingAgent:
     
     async def structure_content(
         self, 
-        ctx: RunContext[SharedDependencies], 
-        research_findings: List[ResearchFinding],
-        topic: str
+        ctx: RunContext[WritingContext]
     ) -> Dict[str, Any]:
         """Organize research data into blog sections.
         
-        Args:
-            research_findings: List of research findings to organize
-            topic: The blog topic for context
-            
+        Uses the research findings and topic from the context to create a structured
+        content organization for the blog post.
+        
         Returns:
             Dictionary with organized content structure
         """
+        # Get data from context
+        research_findings = ctx.deps.research_findings
+        topic = ctx.deps.topic
+        
         # Group findings by category
         categorized_findings = {}
         for finding in research_findings:
@@ -130,7 +162,7 @@ class WritingAgent:
     
     async def enhance_readability(
         self, 
-        ctx: RunContext[SharedDependencies], 
+        ctx: RunContext[WritingContext], 
         content: str,
         target_audience: str = "general"
     ) -> Dict[str, Any]:
