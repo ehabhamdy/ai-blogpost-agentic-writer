@@ -189,7 +189,8 @@ async def test_orchestrator_delegation_methods():
                     'critique_calls': 0,
                     'total_tokens': 0,
                     'api_calls': 0
-                }
+                },
+                shared_deps=deps  # Add the shared dependencies
             )
             
             # Mock RunContext for testing

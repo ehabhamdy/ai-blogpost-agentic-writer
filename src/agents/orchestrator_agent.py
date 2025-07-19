@@ -30,6 +30,7 @@ class OrchestrationContext:
     critique_agent: CritiqueAgent
     start_time: float
     usage_tracking: Dict[str, Any]
+    shared_deps: SharedDependencies  # Store the actual shared dependencies
 
 
 class OrchestratorAgent:
@@ -88,7 +89,8 @@ class OrchestratorAgent:
                     'critique_calls': 0,
                     'total_tokens': 0,
                     'api_calls': 0
-                }
+                },
+                shared_deps=deps  # Store the actual shared dependencies
             )
             
             result = await self.agent.run(
@@ -133,13 +135,9 @@ class OrchestratorAgent:
             ctx.deps.usage_tracking['research_calls'] += 1
             ctx.deps.usage_tracking['api_calls'] += 1
             
-            # Get shared dependencies for the research agent
-            shared_deps = SharedDependencies(
-                http_client=None,  # Will be handled by the research agent
-                tavily_client=None,  # Will be handled by the research agent
-                max_iterations=3,
-                quality_threshold=7.0
-            )
+            # Use the actual shared dependencies from the orchestration context
+            # This ensures the research agent gets the real Tavily client
+            shared_deps = ctx.deps.shared_deps
             
             # Delegate to research agent
             research_result = await ctx.deps.research_agent.research_topic(
@@ -188,13 +186,8 @@ class OrchestratorAgent:
             ctx.deps.usage_tracking['writing_calls'] += 1
             ctx.deps.usage_tracking['api_calls'] += 1
             
-            # Get shared dependencies for the writing agent
-            shared_deps = SharedDependencies(
-                http_client=None,  # Not needed for writing agent
-                tavily_client=None,  # Not needed for writing agent
-                max_iterations=3,
-                quality_threshold=7.0
-            )
+            # Use the actual shared dependencies (writing agent doesn't need Tavily client)
+            shared_deps = ctx.deps.shared_deps
             
             # Delegate to writing agent
             if feedback and original_draft:
@@ -254,13 +247,8 @@ class OrchestratorAgent:
             ctx.deps.usage_tracking['critique_calls'] += 1
             ctx.deps.usage_tracking['api_calls'] += 1
             
-            # Get shared dependencies for the critique agent
-            shared_deps = SharedDependencies(
-                http_client=None,  # Not needed for critique agent
-                tavily_client=None,  # Not needed for critique agent
-                max_iterations=3,
-                quality_threshold=7.0
-            )
+            # Use the actual shared dependencies (critique agent doesn't need Tavily client)
+            shared_deps = ctx.deps.shared_deps
             
             # Delegate to critique agent
             critique_result = await ctx.deps.critique_agent.critique_blog_draft(
