@@ -7,15 +7,15 @@
   - Write unit tests for all data models to ensure proper validation
   - _Requirements: 1.1, 1.2, 1.3, 1.4_
 
-- [ ] 2. Implement Research Agent with web search capabilities
-  - Create Research Agent using Pydantic AI with Gemini 1.5 Flash model
+- [x] 2. Implement Research Agent with web search capabilities
+  - Create Research Agent using Pydantic AI with openai model
   - Implement search_web tool that integrates with Tavily API for web searches
   - Implement extract_facts tool that processes search results into structured ResearchFinding objects
   - Add error handling with ModelRetry for API failures and rate limiting
   - Write unit tests for research tools and agent functionality
   - _Requirements: 2.1, 2.2, 2.3, 2.4_
 
-- [ ] 3. Implement Writing Agent with content generation capabilities
+- [x] 3. Implement Writing Agent with content generation capabilities
   - Create Writing Agent using Pydantic AI with GPT-4o model
   - Implement structure_content tool that organizes research data into blog sections
   - Implement enhance_readability tool that improves content flow and readability
