@@ -94,11 +94,7 @@ class ResearchAgent:
                 summary=f"Limited research data available for {topic} due to technical issues.",
                 confidence_level=0.1
             )
-    
 
-    
-
-    
     def _categorize_finding(self, text: str) -> str:
         """Categorize a finding based on its content."""
         text_lower = text.lower()
