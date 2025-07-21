@@ -88,29 +88,32 @@ class OrchestratorAgent:
                     'writing_calls': 0,
                     'critique_calls': 0,
                     'total_tokens': 0,
-                    'api_calls': 0
+                    'api_calls': 0,
+                    'revision_cycles': 0
                 },
                 shared_deps=deps  # Store the actual shared dependencies
             )
             
+            # Use the agent to run the complete workflow
             result = await self.agent.run(
                 f"""Orchestrate the complete blog generation workflow for the topic: "{topic}"
                 
-                Follow this workflow:
+                Follow this iterative revision workflow:
                 1. Use delegate_research to gather comprehensive research on the topic
                 2. Use delegate_writing to create an initial blog draft from the research
                 3. Use delegate_critique to review the draft and provide feedback
                 4. Use make_revision_decision to determine if revisions are needed
-                5. If revisions are needed, repeat steps 2-4 (max {deps.max_iterations} iterations)
-                6. Return the final BlogGenerationResult with all metadata
+                5. If revisions are needed, use delegate_writing again with feedback and original draft
+                6. Repeat steps 3-5 until quality is acceptable or max iterations ({deps.max_iterations}) reached
+                7. Return the final BlogGenerationResult with all metadata
                 
                 Quality threshold: {deps.quality_threshold}/10
                 Maximum iterations: {deps.max_iterations}
                 
-                Ensure high-quality output while managing processing efficiency.""",
+                Ensure high-quality output while managing processing efficiency through iterative revision.""",
                 deps=context
             )
-            return result.data
+            return result.output
         except Exception as e:
             # Handle orchestration errors gracefully
             if "rate limit" in str(e).lower() or "timeout" in str(e).lower():
