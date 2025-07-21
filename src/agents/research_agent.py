@@ -17,7 +17,7 @@ class ResearchAgent:
         """Initialize the Research Agent with a model."""
         self.agent = Agent(
             model=model,
-            result_type=ResearchOutput,
+            output_type=ResearchOutput,
             system_prompt="""You are a research specialist tasked with gathering comprehensive, 
             factual information on given topics. Your goal is to find relevant facts, statistics, 
             studies, and expert opinions that will inform high-quality blog content.
@@ -42,7 +42,7 @@ class ResearchAgent:
                 f"Research the topic: {topic}. Gather comprehensive information including facts, statistics, studies, and expert opinions.",
                 deps=deps
             )
-            return result.data
+            return result.output
         except Exception as e:
             # Retry with exponential backoff for recoverable errors
             if "rate limit" in str(e).lower() or "timeout" in str(e).lower():

@@ -33,7 +33,7 @@ class CritiqueAgent:
         """Initialize the Critique Agent with a model."""
         self.agent = Agent(
             model=model,
-            result_type=CritiqueOutput,
+            output_type=CritiqueOutput,
             system_prompt="""You are a professional editor and content critic with expertise in 
             evaluating blog posts for clarity, accuracy, structure, and overall quality. Your role 
             is to provide constructive, actionable feedback that helps improve content quality.
@@ -90,7 +90,7 @@ class CritiqueAgent:
                 Quality threshold for approval: {deps.quality_threshold}/10""",
                 deps=context
             )
-            return result.data
+            return result.output
         except Exception as e:
             # Retry with exponential backoff for recoverable errors
             if "rate limit" in str(e).lower() or "timeout" in str(e).lower():

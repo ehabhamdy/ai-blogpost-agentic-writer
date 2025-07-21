@@ -113,7 +113,7 @@ class OrchestratorAgent:
                 Ensure high-quality output while managing processing efficiency through iterative revision.""",
                 deps=context
             )
-            return result.data
+            return result.output
         except Exception as e:
             # Handle orchestration errors gracefully
             if "rate limit" in str(e).lower() or "timeout" in str(e).lower():

@@ -27,7 +27,7 @@ class WritingAgent:
         """Initialize the Writing Agent with a model."""
         self.agent = Agent(
             model=model,
-            result_type=BlogDraft,
+            output_type=BlogDraft,
             system_prompt="""You are a professional content writer specializing in creating 
             engaging, well-structured blog posts. Your goal is to transform research data into 
             compelling, readable content that informs and engages readers.
@@ -79,7 +79,7 @@ class WritingAgent:
                 Create a blog post that is approximately 800-1200 words.""",
                 deps=context
             )
-            return result.data
+            return result.output
         except Exception as e:
             # Retry with exponential backoff for recoverable errors
             if "rate limit" in str(e).lower() or "timeout" in str(e).lower():
@@ -118,7 +118,7 @@ class WritingAgent:
                 while improving based on the feedback.""",
                 deps=context
             )
-            return result.data
+            return result.output
         except Exception as e:
             if "rate limit" in str(e).lower() or "timeout" in str(e).lower():
                 raise ModelRetry(f"Revision failed due to API issues: {e}")
