@@ -15,6 +15,7 @@ from ..models.data_models import (
     CritiqueSeverity
 )
 from ..utils.dependencies import SharedDependencies
+from ..utils.progress_tracker import ProgressTracker, WorkflowStage, AgentStatus
 from .research_agent import ResearchAgent
 from .writing_agent import WritingAgent
 from .critique_agent import CritiqueAgent
@@ -31,6 +32,7 @@ class OrchestrationContext:
     start_time: float
     usage_tracking: Dict[str, Any]
     shared_deps: SharedDependencies  # Store the actual shared dependencies
+    progress_tracker: Optional[ProgressTracker] = None  # Progress tracking
 
 
 class OrchestratorAgent:
@@ -70,13 +72,19 @@ class OrchestratorAgent:
         research_agent: ResearchAgent,
         writing_agent: WritingAgent,
         critique_agent: CritiqueAgent,
-        deps: SharedDependencies
+        deps: SharedDependencies,
+        progress_tracker: Optional[ProgressTracker] = None
     ) -> BlogGenerationResult:
         """Generate a complete blog post through the multi-agent workflow."""
         try:
             start_time = time.time()
             
-            # Create orchestration context
+            # Initialize progress tracking
+            if progress_tracker:
+                progress_tracker.update_stage(WorkflowStage.INITIALIZING, f"Starting blog generation for: {topic}")
+                progress_tracker.max_revisions = deps.max_iterations
+            
+            # Create orchestration context with progress tracker
             context = OrchestrationContext(
                 topic=topic,
                 research_agent=research_agent,
@@ -93,6 +101,10 @@ class OrchestratorAgent:
                 },
                 shared_deps=deps  # Store the actual shared dependencies
             )
+            
+            # Store progress tracker in context for tools to use
+            if progress_tracker:
+                context.progress_tracker = progress_tracker
             
             # Use the agent to run the complete workflow
             result = await self.agent.run(
@@ -113,6 +125,11 @@ class OrchestratorAgent:
                 Ensure high-quality output while managing processing efficiency through iterative revision.""",
                 deps=context
             )
+            
+            # Mark workflow as completed
+            if progress_tracker:
+                progress_tracker.update_stage(WorkflowStage.COMPLETED, "Blog generation completed successfully")
+            
             return result.output
         except Exception as e:
             # Handle orchestration errors gracefully
@@ -134,6 +151,11 @@ class OrchestratorAgent:
             ResearchOutput with comprehensive research findings
         """
         try:
+            # Update progress tracking
+            if ctx.deps.progress_tracker:
+                ctx.deps.progress_tracker.update_stage(WorkflowStage.RESEARCHING, f"Researching topic: {topic}")
+                ctx.deps.progress_tracker.update_agent("research", AgentStatus.WORKING, f"Gathering information about {topic}")
+            
             # Update usage tracking
             ctx.deps.usage_tracking['research_calls'] += 1
             ctx.deps.usage_tracking['api_calls'] += 1
@@ -151,9 +173,23 @@ class OrchestratorAgent:
             # Track token usage (simplified tracking)
             ctx.deps.usage_tracking['total_tokens'] += len(research_result.summary.split()) * 2
             
+            # Update progress tracking - research completed
+            if ctx.deps.progress_tracker:
+                ctx.deps.progress_tracker.update_agent(
+                    "research", 
+                    AgentStatus.COMPLETED, 
+                    f"Found {len(research_result.findings)} research findings",
+                    100.0,
+                    {"findings_count": len(research_result.findings), "confidence": research_result.confidence_level}
+                )
+            
             return research_result
             
         except Exception as e:
+            # Update progress tracking - research error
+            if ctx.deps.progress_tracker:
+                ctx.deps.progress_tracker.set_error("research", str(e))
+            
             if "rate limit" in str(e).lower():
                 raise ModelRetry(f"Research delegation failed due to rate limiting: {e}")
             elif "timeout" in str(e).lower():
@@ -185,6 +221,17 @@ class OrchestratorAgent:
             BlogDraft with structured blog content
         """
         try:
+            # Update progress tracking
+            if ctx.deps.progress_tracker:
+                if feedback and original_draft:
+                    # This is a revision
+                    ctx.deps.progress_tracker.update_stage(WorkflowStage.REVISING, "Revising blog draft based on feedback")
+                    ctx.deps.progress_tracker.update_agent("writing", AgentStatus.WORKING, "Revising draft with critique feedback")
+                else:
+                    # This is initial draft creation
+                    ctx.deps.progress_tracker.update_stage(WorkflowStage.WRITING_INITIAL, "Creating initial blog draft")
+                    ctx.deps.progress_tracker.update_agent("writing", AgentStatus.WORKING, "Creating blog draft from research")
+            
             # Update usage tracking
             ctx.deps.usage_tracking['writing_calls'] += 1
             ctx.deps.usage_tracking['api_calls'] += 1
@@ -213,9 +260,24 @@ class OrchestratorAgent:
             total_content = f"{writing_result.title} {writing_result.introduction} {' '.join(writing_result.body_sections)} {writing_result.conclusion}"
             ctx.deps.usage_tracking['total_tokens'] += len(total_content.split()) * 2
             
+            # Update progress tracking - writing completed
+            if ctx.deps.progress_tracker:
+                task_type = "revision" if feedback and original_draft else "initial draft"
+                ctx.deps.progress_tracker.update_agent(
+                    "writing", 
+                    AgentStatus.COMPLETED, 
+                    f"Completed {task_type} ({writing_result.word_count} words)",
+                    100.0,
+                    {"word_count": writing_result.word_count, "task_type": task_type}
+                )
+            
             return writing_result
             
         except Exception as e:
+            # Update progress tracking - writing error
+            if ctx.deps.progress_tracker:
+                ctx.deps.progress_tracker.set_error("writing", str(e))
+            
             if "rate limit" in str(e).lower():
                 raise ModelRetry(f"Writing delegation failed due to rate limiting: {e}")
             elif "timeout" in str(e).lower():
@@ -246,6 +308,11 @@ class OrchestratorAgent:
             CritiqueOutput with detailed feedback and approval status
         """
         try:
+            # Update progress tracking
+            if ctx.deps.progress_tracker:
+                ctx.deps.progress_tracker.update_stage(WorkflowStage.CRITIQUING, "Analyzing blog draft quality")
+                ctx.deps.progress_tracker.update_agent("critique", AgentStatus.WORKING, f"Reviewing {blog_draft.word_count}-word draft")
+            
             # Update usage tracking
             ctx.deps.usage_tracking['critique_calls'] += 1
             ctx.deps.usage_tracking['api_calls'] += 1
@@ -264,9 +331,27 @@ class OrchestratorAgent:
             feedback_text = " ".join([f.issue + " " + f.suggestion for f in critique_result.feedback_items])
             ctx.deps.usage_tracking['total_tokens'] += len(feedback_text.split()) * 2
             
+            # Update progress tracking - critique completed
+            if ctx.deps.progress_tracker:
+                ctx.deps.progress_tracker.update_agent(
+                    "critique", 
+                    AgentStatus.COMPLETED, 
+                    f"Quality score: {critique_result.overall_quality:.1f}/10 ({critique_result.approval_status})",
+                    100.0,
+                    {
+                        "quality_score": critique_result.overall_quality,
+                        "approval_status": critique_result.approval_status,
+                        "feedback_count": len(critique_result.feedback_items)
+                    }
+                )
+            
             return critique_result
             
         except Exception as e:
+            # Update progress tracking - critique error
+            if ctx.deps.progress_tracker:
+                ctx.deps.progress_tracker.set_error("critique", str(e))
+            
             if "rate limit" in str(e).lower():
                 raise ModelRetry(f"Critique delegation failed due to rate limiting: {e}")
             elif "timeout" in str(e).lower():
@@ -308,19 +393,29 @@ class OrchestratorAgent:
             'max_iterations': max_iterations
         }
         
+        # Update progress tracking with revision count
+        if ctx.deps.progress_tracker:
+            ctx.deps.progress_tracker.update_revision_count(current_iteration)
+        
         # Check if we've reached maximum iterations
         if current_iteration >= max_iterations:
             decision['reasoning'] = f"Maximum iterations ({max_iterations}) reached. Stopping revision cycle."
+            if ctx.deps.progress_tracker:
+                ctx.deps.progress_tracker.update_stage(WorkflowStage.FINALIZING, "Maximum iterations reached, finalizing result")
             return decision
         
         # Check if critique explicitly approved the draft
         if critique_output.approval_status == "approved":
             decision['reasoning'] = "Draft approved by critique agent."
+            if ctx.deps.progress_tracker:
+                ctx.deps.progress_tracker.update_stage(WorkflowStage.FINALIZING, "Draft approved, finalizing result")
             return decision
         
         # Check if quality score meets threshold
         if critique_output.overall_quality >= quality_threshold:
             decision['reasoning'] = f"Quality score ({critique_output.overall_quality:.1f}) meets threshold ({quality_threshold})."
+            if ctx.deps.progress_tracker:
+                ctx.deps.progress_tracker.update_stage(WorkflowStage.FINALIZING, "Quality threshold met, finalizing result")
             return decision
         
         # Check severity of feedback items
@@ -339,6 +434,8 @@ class OrchestratorAgent:
             decision['reasoning'] = f"Quality score ({critique_output.overall_quality:.1f}) significantly below threshold ({quality_threshold})."
         else:
             decision['reasoning'] = f"Quality acceptable ({critique_output.overall_quality:.1f}) despite minor issues."
+            if ctx.deps.progress_tracker:
+                ctx.deps.progress_tracker.update_stage(WorkflowStage.FINALIZING, "Quality acceptable despite minor issues")
         
         return decision
     
