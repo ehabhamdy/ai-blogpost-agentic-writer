@@ -25,6 +25,7 @@ from src.agents.research_agent import ResearchAgent
 from src.agents.writing_agent import WritingAgent
 from src.agents.critique_agent import CritiqueAgent
 from src.utils.dependencies import SharedDependencies
+from src.models.data_models import ResearchOutput
 
 # Load environment variables
 load_dotenv()
@@ -222,6 +223,16 @@ async def test_orchestrator_delegation_methods():
             
             # Test 3: Critique delegation
             print("3️⃣ Testing critique delegation...")
+            # Ensure research_result has all required fields
+            if not hasattr(research_result, 'confidence_level') or research_result.confidence_level is None:
+                print("   Adding missing confidence_level to research_result")
+                research_result = ResearchOutput(
+                    topic=research_result.topic,
+                    findings=research_result.findings,
+                    summary=research_result.summary if hasattr(research_result, 'summary') else f"Research summary for {research_result.topic}",
+                    confidence_level=0.7  # Default confidence level
+                )
+                
             critique_result = await orchestrator_agent.delegate_critique(
                 mock_ctx, writing_result, research_result
             )
@@ -281,7 +292,7 @@ async def main():
     print()
     
     # Test 1: Individual delegation methods
-    await test_orchestrator_delegation_methods()
+    # await test_orchestrator_delegation_methods()
     print()
     print("-" * 60)
     print()

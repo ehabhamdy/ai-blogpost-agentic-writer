@@ -12,6 +12,7 @@ from ..models.data_models import (
     BlogGenerationResult,
     BlogDraft,
     ResearchOutput,
+    ResearchFinding,
     CritiqueOutput,
     CritiqueSeverity
 )
@@ -316,6 +317,17 @@ class OrchestratorAgent:
             # Use the actual shared dependencies (critique agent doesn't need Tavily client)
             shared_deps = ctx.deps.shared_deps
             
+            # Ensure research_data has all required fields
+            if not hasattr(research_data, 'confidence_level') or research_data.confidence_level is None:
+                logger.warning("Adding missing confidence_level to research_data")
+                # Create a new ResearchOutput with all required fields
+                research_data = ResearchOutput(
+                    topic=research_data.topic,
+                    findings=research_data.findings,
+                    summary=research_data.summary if hasattr(research_data, 'summary') else f"Research summary for {research_data.topic}",
+                    confidence_level=0.7  # Default confidence level
+                )
+                
             # Delegate to critique agent
             critique_result = await ctx.deps.critique_agent.critique_blog_draft(
                 blog_draft=blog_draft,
