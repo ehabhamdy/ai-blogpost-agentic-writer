@@ -1,6 +1,7 @@
 """Research Agent for gathering comprehensive research on topics."""
 
 import asyncio
+import logging
 from typing import List, Dict, Any
 from pydantic import Field
 from pydantic_ai import Agent, ModelRetry, RunContext
@@ -8,6 +9,10 @@ from pydantic_ai.models import Model
 
 from ..models.data_models import ResearchOutput, ResearchFinding
 from ..utils.dependencies import SharedDependencies
+
+from ..utils.exceptions import ResearchError
+
+logger = logging.getLogger(__name__)
 
 
 class ResearchAgent:
@@ -37,6 +42,13 @@ class ResearchAgent:
     
     async def research_topic(self, topic: str, deps: SharedDependencies) -> ResearchOutput:
         """Research a topic and return structured findings."""
+        if not topic or not topic.strip():
+            raise ResearchError(
+                "Topic cannot be empty",
+                topic=topic,
+                error_code="INVALID_TOPIC"
+            )
+        
         try:
             result = await self.agent.run(
                 f"Research the topic: {topic}. Gather comprehensive information including facts, statistics, studies, and expert opinions.",
@@ -44,10 +56,16 @@ class ResearchAgent:
             )
             return result.output
         except Exception as e:
-            # Retry with exponential backoff for recoverable errors
+            # Use ModelRetry for retryable errors (pydantic-ai will handle the retry)
             if "rate limit" in str(e).lower() or "timeout" in str(e).lower():
                 raise ModelRetry(f"Research failed due to API issues: {e}")
-            raise e
+            
+            # Convert other errors to appropriate exception types
+            raise ResearchError(
+                f"Research failed for topic '{topic}': {e}",
+                topic=topic,
+                original_error=e
+            )
     
     async def comprehensive_research(
         self, 
@@ -83,15 +101,18 @@ class ResearchAgent:
             )
             
         except Exception as e:
-            # Handle errors gracefully
+            logger.error(f"Comprehensive research failed for topic '{topic}': {e}")
+            
+            # Use ModelRetry for retryable errors
             if "rate limit" in str(e).lower() or "timeout" in str(e).lower():
                 raise ModelRetry(f"Research failed due to API issues: {e}")
             
-            # Return minimal result for other errors
+            # Return minimal result for graceful degradation on other errors
+            logger.warning(f"Returning minimal research result for topic '{topic}' due to error: {e}")
             return ResearchOutput(
                 topic=topic,
                 findings=[],
-                summary=f"Limited research data available for {topic} due to technical issues.",
+                summary=f"Limited research data available for {topic} due to technical issues: {str(e)[:100]}",
                 confidence_level=0.1
             )
 
@@ -138,7 +159,7 @@ class ResearchAgent:
     
     async def _search_web(self, deps: SharedDependencies, topic: str) -> List[Dict[str, Any]]:
         """Internal method to search the web for information."""
-        try:
+        async def _perform_search():
             # Use Tavily client from dependencies
             search_response = deps.tavily_client.search(
                 query=topic,
@@ -158,14 +179,21 @@ class ResearchAgent:
                 })
             
             return results
+        
+        try:
+            return await _perform_search()
             
         except Exception as e:
+            logger.error(f"Web search failed for topic '{topic}': {e}")
+            
+            # Use ModelRetry for retryable errors
             if "rate limit" in str(e).lower():
                 raise ModelRetry(f"Tavily API rate limit exceeded: {e}")
             elif "timeout" in str(e).lower():
                 raise ModelRetry(f"Tavily API timeout: {e}")
             else:
-                # For other errors, return empty results rather than failing completely
+                # For other errors, return empty results for graceful degradation
+                logger.warning(f"Returning empty search results for topic '{topic}' due to error: {e}")
                 return []
     
     async def _extract_facts(self, deps: SharedDependencies, search_results: List[Dict[str, Any]], topic: str) -> List[ResearchFinding]:
