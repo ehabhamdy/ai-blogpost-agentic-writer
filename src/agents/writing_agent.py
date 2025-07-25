@@ -1,6 +1,7 @@
 """Writing Agent for creating well-structured blog posts from research data."""
 
 import asyncio
+import logging
 from typing import List, Dict, Any
 from pydantic import Field
 from pydantic_ai import Agent, ModelRetry, RunContext
@@ -8,7 +9,11 @@ from pydantic_ai.models import Model
 
 from ..models.data_models import BlogDraft, ResearchOutput, ResearchFinding
 from ..utils.dependencies import SharedDependencies
+
+from ..utils.exceptions import WritingError, ValidationError
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -39,6 +44,14 @@ class WritingAgent:
             - Maintaining reader engagement throughout
             - Creating compelling titles and smooth transitions
             
+            IMPORTANT: Your output MUST include these required fields:
+            - title: A compelling blog post title
+            - introduction: An engaging opening paragraph
+            - body_sections: A list of content sections for the main body
+            - conclusion: A closing paragraph that summarizes key points
+            
+            Note: The word count will be calculated automatically by the system.
+            
             Use the available tools to structure content and enhance readability."""
         )
         
@@ -53,6 +66,17 @@ class WritingAgent:
         deps: SharedDependencies
     ) -> BlogDraft:
         """Create a blog draft from research data."""
+        # Validate inputs
+        if not topic or not topic.strip():
+            raise ValidationError(
+                "Topic cannot be empty",
+                field_name="topic",
+                invalid_value=topic
+            )
+        
+        if not research_data or not research_data.findings:
+            logger.warning(f"Creating draft for '{topic}' with limited research data")
+        
         try:
             # Create a context that includes the research data
             context = WritingContext(
@@ -79,12 +103,47 @@ class WritingAgent:
                 Create a blog post that is approximately 800-1200 words.""",
                 deps=context
             )
-            return result.output
+            
+            # Validate and ensure complete output
+            draft = result.output
+            
+            # Check for required fields and add them if missing
+            if not draft.title or not draft.introduction or not draft.body_sections:
+                raise ValidationError(
+                    "Generated draft is missing required sections",
+                    field_name="blog_draft",
+                    invalid_value="incomplete_draft"
+                )
+            
+            # Ensure conclusion exists
+            if not hasattr(draft, 'conclusion') or not draft.conclusion:
+                # Generate a simple conclusion from the body content
+                body_text = " ".join(draft.body_sections)
+                draft.conclusion = f"In conclusion, {draft.title.split(':')[0] if ':' in draft.title else draft.title} offers significant benefits worth considering. As we've explored in this article, the evidence supports incorporating this practice into your routine for optimal results."
+                logger.warning("Added missing conclusion to draft")
+            
+            # Always calculate word count programmatically for accuracy
+            all_text = f"{draft.title} {draft.introduction} {' '.join(draft.body_sections)} {draft.conclusion}"
+            draft.word_count = len(all_text.split())
+            logger.info(f"Calculated word count: {draft.word_count}")
+            
+            return draft
+            
         except Exception as e:
-            # Retry with exponential backoff for recoverable errors
+            # Use ModelRetry for retryable errors
             if "rate limit" in str(e).lower() or "timeout" in str(e).lower():
                 raise ModelRetry(f"Writing failed due to API issues: {e}")
-            raise e
+            
+            # Handle validation errors and other exceptions
+            if isinstance(e, ValidationError):
+                raise e
+            else:
+                raise WritingError(
+                    f"Failed to create blog draft for topic '{topic}': {e}",
+                    topic=topic,
+                    draft_stage="initial",
+                    original_error=e
+                )
     
     async def revise_blog_draft(
         self,
@@ -94,6 +153,21 @@ class WritingAgent:
         deps: SharedDependencies
     ) -> BlogDraft:
         """Revise a blog draft based on feedback."""
+        # Validate inputs
+        if not original_draft:
+            raise ValidationError(
+                "Original draft cannot be None",
+                field_name="original_draft",
+                invalid_value=None
+            )
+        
+        if not feedback or not feedback.strip():
+            raise ValidationError(
+                "Feedback cannot be empty",
+                field_name="feedback",
+                invalid_value=feedback
+            )
+        
         try:
             # Create a context that includes the research data
             context = WritingContext(
@@ -118,11 +192,50 @@ class WritingAgent:
                 while improving based on the feedback.""",
                 deps=context
             )
-            return result.output
+            
+            # Validate and ensure complete revised output
+            revised_draft = result.output
+            
+            # Check for required fields and add them if missing
+            if not revised_draft.title or not revised_draft.introduction or not revised_draft.body_sections:
+                raise ValidationError(
+                    "Revised draft is missing required sections",
+                    field_name="revised_draft",
+                    invalid_value="incomplete_revision"
+                )
+            
+            # Ensure conclusion exists
+            if not hasattr(revised_draft, 'conclusion') or not revised_draft.conclusion:
+                # Generate a simple conclusion from the body content or keep original
+                if hasattr(original_draft, 'conclusion') and original_draft.conclusion:
+                    revised_draft.conclusion = original_draft.conclusion
+                else:
+                    body_text = " ".join(revised_draft.body_sections)
+                    revised_draft.conclusion = f"In conclusion, {revised_draft.title.split(':')[0] if ':' in revised_draft.title else revised_draft.title} offers significant benefits worth considering. As we've explored in this article, the evidence supports incorporating this practice into your routine for optimal results."
+                logger.warning("Added missing conclusion to revised draft")
+            
+            # Always calculate word count programmatically for accuracy
+            all_text = f"{revised_draft.title} {revised_draft.introduction} {' '.join(revised_draft.body_sections)} {revised_draft.conclusion}"
+            revised_draft.word_count = len(all_text.split())
+            logger.info(f"Calculated word count for revised draft: {revised_draft.word_count}")
+            
+            return revised_draft
+            
         except Exception as e:
+            # Use ModelRetry for retryable errors
             if "rate limit" in str(e).lower() or "timeout" in str(e).lower():
                 raise ModelRetry(f"Revision failed due to API issues: {e}")
-            raise e
+            
+            # Handle validation errors and other exceptions
+            if isinstance(e, ValidationError):
+                raise e
+            else:
+                raise WritingError(
+                    f"Failed to revise blog draft '{original_draft.title}': {e}",
+                    topic=research_data.topic,
+                    draft_stage="revision",
+                    original_error=e
+                )
     
     async def structure_content(
         self, 

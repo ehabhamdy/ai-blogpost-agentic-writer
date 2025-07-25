@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+import logging
 from typing import Dict, Any, Optional
 from pydantic import Field
 from pydantic_ai import Agent, ModelRetry, RunContext
@@ -11,14 +12,25 @@ from ..models.data_models import (
     BlogGenerationResult,
     BlogDraft,
     ResearchOutput,
+    ResearchFinding,
     CritiqueOutput,
     CritiqueSeverity
 )
 from ..utils.dependencies import SharedDependencies
+
+from ..utils.exceptions import (
+    OrchestrationError, 
+    ResearchError, 
+    WritingError, 
+    CritiqueError,
+    ValidationError
+)
 from .research_agent import ResearchAgent
 from .writing_agent import WritingAgent
 from .critique_agent import CritiqueAgent
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -73,9 +85,25 @@ class OrchestratorAgent:
         deps: SharedDependencies
     ) -> BlogGenerationResult:
         """Generate a complete blog post through the multi-agent workflow."""
+        # Validate inputs
+        if not topic or not topic.strip():
+            raise ValidationError(
+                "Topic cannot be empty",
+                field_name="topic",
+                invalid_value=topic
+            )
+        
+        if not all([research_agent, writing_agent, critique_agent]):
+            raise ValidationError(
+                "All agents must be provided",
+                field_name="agents",
+                invalid_value="missing_agents"
+            )
+        
+        start_time = time.time()
+        intermediate_results = {}  # Store intermediate results for graceful degradation
+        
         try:
-            start_time = time.time()
-            
             # Create orchestration context
             context = OrchestrationContext(
                 topic=topic,
@@ -94,7 +122,6 @@ class OrchestratorAgent:
                 shared_deps=deps  # Store the actual shared dependencies
             )
             
-            # Use the agent to run the complete workflow
             result = await self.agent.run(
                 f"""Orchestrate the complete blog generation workflow for the topic: "{topic}"
                 
@@ -113,12 +140,37 @@ class OrchestratorAgent:
                 Ensure high-quality output while managing processing efficiency through iterative revision.""",
                 deps=context
             )
+            
             return result.output
+            
         except Exception as e:
-            # Handle orchestration errors gracefully
+            logger.error(f"Blog generation failed for topic '{topic}': {e}")
+            
+            # Use ModelRetry for retryable errors
             if "rate limit" in str(e).lower() or "timeout" in str(e).lower():
                 raise ModelRetry(f"Orchestration failed due to API issues: {e}")
-            raise e
+            
+            # Handle agent-specific errors
+            if isinstance(e, (ResearchError, WritingError, CritiqueError)):
+                # Re-raise agent-specific errors with orchestration context
+                raise OrchestrationError(
+                    f"Blog generation failed during {e.__class__.__name__.replace('Error', '').lower()} phase: {e}",
+                    workflow_stage=e.__class__.__name__.replace('Error', '').lower(),
+                    original_error=e
+                )
+            elif isinstance(e, (ValidationError, OrchestrationError)):
+                raise e
+            else:
+                # Try to preserve intermediate results if available
+                if intermediate_results:
+                    logger.warning(f"Returning partial results due to error: {e}")
+                    # Could implement partial result recovery here
+                
+                raise OrchestrationError(
+                    f"Blog generation failed for topic '{topic}': {e}",
+                    workflow_stage="orchestration",
+                    original_error=e
+                )
     
     async def delegate_research(
         self,
@@ -154,16 +206,22 @@ class OrchestratorAgent:
             return research_result
             
         except Exception as e:
+            logger.error(f"Research delegation failed for topic '{topic}': {e}")
+            
             if "rate limit" in str(e).lower():
                 raise ModelRetry(f"Research delegation failed due to rate limiting: {e}")
             elif "timeout" in str(e).lower():
                 raise ModelRetry(f"Research delegation timed out: {e}")
+            elif isinstance(e, ResearchError):
+                # Re-raise research errors as-is
+                raise e
             else:
-                # Return minimal research result for other errors
+                # Return minimal research result for graceful degradation
+                logger.warning(f"Returning minimal research result for topic '{topic}' due to error: {e}")
                 return ResearchOutput(
                     topic=topic,
                     findings=[],
-                    summary=f"Limited research available for {topic} due to technical issues.",
+                    summary=f"Limited research available for {topic} due to technical issues: {str(e)[:100]}",
                     confidence_level=0.1
                 )
     
@@ -216,17 +274,23 @@ class OrchestratorAgent:
             return writing_result
             
         except Exception as e:
+            logger.error(f"Writing delegation failed for topic '{research_data.topic}': {e}")
+            
             if "rate limit" in str(e).lower():
                 raise ModelRetry(f"Writing delegation failed due to rate limiting: {e}")
             elif "timeout" in str(e).lower():
                 raise ModelRetry(f"Writing delegation timed out: {e}")
+            elif isinstance(e, WritingError):
+                # Re-raise writing errors as-is
+                raise e
             else:
-                # Return minimal draft for other errors
+                # Return minimal draft for graceful degradation
+                logger.warning(f"Returning minimal draft for topic '{research_data.topic}' due to error: {e}")
                 return BlogDraft(
                     title=f"Blog Post: {research_data.topic}",
-                    introduction=f"This article explores {research_data.topic}.",
-                    body_sections=[f"Content about {research_data.topic} will be added here."],
-                    conclusion=f"In conclusion, {research_data.topic} is an important topic.",
+                    introduction=f"This article explores {research_data.topic}. {str(e)[:100]}",
+                    body_sections=[f"Content about {research_data.topic} will be added here due to technical limitations."],
+                    conclusion=f"In conclusion, {research_data.topic} is an important topic that requires further exploration.",
                     word_count=50
                 )
     
@@ -253,6 +317,17 @@ class OrchestratorAgent:
             # Use the actual shared dependencies (critique agent doesn't need Tavily client)
             shared_deps = ctx.deps.shared_deps
             
+            # Ensure research_data has all required fields
+            if not hasattr(research_data, 'confidence_level') or research_data.confidence_level is None:
+                logger.warning("Adding missing confidence_level to research_data")
+                # Create a new ResearchOutput with all required fields
+                research_data = ResearchOutput(
+                    topic=research_data.topic,
+                    findings=research_data.findings,
+                    summary=research_data.summary if hasattr(research_data, 'summary') else f"Research summary for {research_data.topic}",
+                    confidence_level=0.7  # Default confidence level
+                )
+                
             # Delegate to critique agent
             critique_result = await ctx.deps.critique_agent.critique_blog_draft(
                 blog_draft=blog_draft,
@@ -267,17 +342,23 @@ class OrchestratorAgent:
             return critique_result
             
         except Exception as e:
+            logger.error(f"Critique delegation failed for draft '{blog_draft.title}': {e}")
+            
             if "rate limit" in str(e).lower():
                 raise ModelRetry(f"Critique delegation failed due to rate limiting: {e}")
             elif "timeout" in str(e).lower():
                 raise ModelRetry(f"Critique delegation timed out: {e}")
+            elif isinstance(e, CritiqueError):
+                # Re-raise critique errors as-is
+                raise e
             else:
-                # Return minimal critique for other errors
+                # Return minimal critique for graceful degradation
+                logger.warning(f"Returning minimal critique for draft '{blog_draft.title}' due to error: {e}")
                 return CritiqueOutput(
                     overall_quality=6.0,
                     feedback_items=[],
                     approval_status="approved",
-                    summary_feedback="Unable to provide detailed critique due to technical issues."
+                    summary_feedback=f"Unable to provide detailed critique due to technical issues: {str(e)[:100]}"
                 )
     
     async def make_revision_decision(

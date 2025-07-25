@@ -1,6 +1,7 @@
 """Critique Agent for providing editorial analysis and feedback on blog drafts."""
 
 import asyncio
+import logging
 from typing import List, Dict, Any
 from pydantic import Field
 from pydantic_ai import Agent, ModelRetry, RunContext
@@ -15,7 +16,11 @@ from ..models.data_models import (
     ResearchFinding
 )
 from ..utils.dependencies import SharedDependencies
+
+from ..utils.exceptions import CritiqueError, ValidationError
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -33,6 +38,7 @@ class CritiqueAgent:
         """Initialize the Critique Agent with a model."""
         self.agent = Agent(
             model=model,
+            retries=3,
             output_type=CritiqueOutput,
             system_prompt="""You are a professional editor and content critic with expertise in 
             evaluating blog posts for clarity, accuracy, structure, and overall quality. Your role 
@@ -61,6 +67,28 @@ class CritiqueAgent:
         deps: SharedDependencies
     ) -> CritiqueOutput:
         """Provide comprehensive critique of a blog draft."""
+        # Validate inputs
+        if not blog_draft:
+            raise ValidationError(
+                "Blog draft cannot be None",
+                field_name="blog_draft",
+                invalid_value=None
+            )
+        
+        if not blog_draft.title or not blog_draft.introduction or not blog_draft.body_sections:
+            raise ValidationError(
+                "Blog draft is missing required sections",
+                field_name="blog_draft_sections",
+                invalid_value="incomplete_draft"
+            )
+        
+        if not research_data:
+            raise ValidationError(
+                "Research data cannot be None",
+                field_name="research_data",
+                invalid_value=None
+            )
+        
         try:
             # Create a context that includes both the draft and research data
             context = CritiqueContext(
@@ -90,12 +118,25 @@ class CritiqueAgent:
                 Quality threshold for approval: {deps.quality_threshold}/10""",
                 deps=context
             )
-            return result.output
+            
+            # Validate output
+            critique = result.output
+            if not critique.feedback_items and critique.overall_quality == 0:
+                logger.warning(f"Critique returned minimal results for draft '{blog_draft.title}'")
+            
+            return critique
+            
         except Exception as e:
-            # Retry with exponential backoff for recoverable errors
+            # Use ModelRetry for retryable errors
             if "rate limit" in str(e).lower() or "timeout" in str(e).lower():
                 raise ModelRetry(f"Critique failed due to API issues: {e}")
-            raise e
+            
+            # Handle other exceptions
+            raise CritiqueError(
+                f"Failed to critique blog draft '{blog_draft.title}': {e}",
+                draft_title=blog_draft.title,
+                original_error=e
+            )
     
     async def analyze_clarity(
         self, 
