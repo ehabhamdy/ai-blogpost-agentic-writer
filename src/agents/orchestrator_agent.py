@@ -14,9 +14,12 @@ from ..models.data_models import (
     ResearchOutput,
     ResearchFinding,
     CritiqueOutput,
-    CritiqueSeverity
+    CritiqueSeverity,
+    ProcessingStage,
+    WorkflowProgress
 )
 from ..utils.dependencies import SharedDependencies
+from ..utils.progress_tracker import ProgressTracker, create_structured_logger
 
 from ..utils.exceptions import (
     OrchestrationError, 
@@ -30,7 +33,7 @@ from .writing_agent import WritingAgent
 from .critique_agent import CritiqueAgent
 from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
+logger = create_structured_logger(__name__)
 
 
 @dataclass
@@ -43,6 +46,7 @@ class OrchestrationContext:
     start_time: float
     usage_tracking: Dict[str, Any]
     shared_deps: SharedDependencies  # Store the actual shared dependencies
+    progress_tracker: ProgressTracker  # Progress tracking throughout workflow
 
 
 class OrchestratorAgent:
@@ -53,21 +57,21 @@ class OrchestratorAgent:
         self.agent = Agent(
             model=model,
             output_type=BlogGenerationResult,
-            system_prompt="""You are the orchestrator of a multi-agent blog generation system. 
-            Your role is to coordinate between Research, Writing, and Critique agents to produce 
-            high-quality blog posts through an iterative workflow.
-            
-            Your responsibilities:
-            - Delegate research tasks to gather comprehensive information
-            - Coordinate writing tasks to create well-structured drafts
-            - Manage critique and revision cycles for quality improvement
-            - Make decisions about when to continue or stop revision cycles
-            - Track usage and performance metrics throughout the process
-            - Ensure the final output meets quality standards
-            
-            Use the available tools to delegate work to specialized agents and make 
-            informed decisions about the workflow progression. Always prioritize quality 
-            while managing iteration limits and processing efficiency."""
+            system_prompt="""You are a blog generation orchestrator. Your job is to coordinate agents to create a high-quality blog post.
+
+WORKFLOW:
+1. Call delegate_research with the topic to gather information
+2. Call delegate_writing with research_data to create initial draft
+3. Call delegate_critique with blog_draft and research_data to review quality
+4. Call make_revision_decision to determine if revision is needed
+5. If revision needed: call delegate_writing with original_draft, feedback, and research_data
+6. Repeat critique and revision until approved or max iterations reached
+
+IMPORTANT: 
+- Always use the tools in the correct sequence
+- Pass the correct parameters to each tool
+- Return a complete BlogGenerationResult with all required fields
+- Be efficient but thorough in coordination"""
         )
         
         # Register tools
@@ -103,6 +107,12 @@ class OrchestratorAgent:
         start_time = time.time()
         intermediate_results = {}  # Store intermediate results for graceful degradation
         
+        logger.info(f"🚀 Starting blog generation workflow for topic: '{topic}'")
+        logger.info(f"📋 Configuration: max_iterations={deps.max_iterations}, quality_threshold={deps.quality_threshold}")
+        
+        # Initialize progress tracker
+        progress_tracker = ProgressTracker(topic, deps.progress_callback)
+        
         try:
             # Create orchestration context
             context = OrchestrationContext(
@@ -119,32 +129,65 @@ class OrchestratorAgent:
                     'api_calls': 0,
                     'revision_cycles': 0
                 },
-                shared_deps=deps  # Store the actual shared dependencies
+                shared_deps=deps,  # Store the actual shared dependencies
+                progress_tracker=progress_tracker
             )
             
+            orchestration_start_time = time.time()
+            logger.info("🎯 Starting orchestration agent execution...")
+            
             result = await self.agent.run(
-                f"""Orchestrate the complete blog generation workflow for the topic: "{topic}"
-                
-                Follow this iterative revision workflow:
-                1. Use delegate_research to gather comprehensive research on the topic
-                2. Use delegate_writing to create an initial blog draft from the research
-                3. Use delegate_critique to review the draft and provide feedback
-                4. Use make_revision_decision to determine if revisions are needed
-                5. If revisions are needed, use delegate_writing again with feedback and original draft
-                6. Repeat steps 3-5 until quality is acceptable or max iterations ({deps.max_iterations}) reached
-                7. Return the final BlogGenerationResult with all metadata
-                
-                Quality threshold: {deps.quality_threshold}/10
-                Maximum iterations: {deps.max_iterations}
-                
-                Ensure high-quality output while managing processing efficiency through iterative revision.""",
+                f"""Create a complete blog post for topic: "{topic}"
+
+Follow the workflow steps using the available tools:
+1. Research the topic thoroughly
+2. Write an initial draft based on research
+3. Critique the draft for quality
+4. Revise if needed (max {deps.max_iterations} iterations, quality threshold {deps.quality_threshold}/10)
+
+Return a BlogGenerationResult with the final post, research data, and metadata.""",
                 deps=context
             )
+            
+            # Log orchestration completion time
+            orchestration_time = time.time() - orchestration_start_time
+            total_time = time.time() - start_time
+            logger.info(f"✅ Orchestration agent execution completed in {orchestration_time:.2f} seconds")
+            logger.info(f"🏁 Total workflow completed in {total_time:.2f} seconds")
+            
+            # Log final statistics
+            logger.info(f"📊 Final Statistics:")
+            logger.info(f"   - Quality Score: {result.output.quality_score:.1f}/10")
+            logger.info(f"   - Revision Cycles: {result.output.revision_count}")
+            logger.info(f"   - Research Calls: {context.usage_tracking['research_calls']}")
+            logger.info(f"   - Writing Calls: {context.usage_tracking['writing_calls']}")
+            logger.info(f"   - Critique Calls: {context.usage_tracking['critique_calls']}")
+            logger.info(f"   - Total API Calls: {context.usage_tracking['api_calls']}")
+            
+            # Complete workflow successfully
+            final_progress = progress_tracker.complete_workflow(
+                final_quality_score=result.output.quality_score,
+                revision_count=result.output.revision_count
+            )
+            
+            # Update result with progress information
+            result.output.workflow_progress = final_progress
             
             return result.output
             
         except Exception as e:
             logger.error(f"Blog generation failed for topic '{topic}': {e}")
+            
+            # Mark workflow as failed
+            failing_agent = None
+            if isinstance(e, ResearchError):
+                failing_agent = "ResearchAgent"
+            elif isinstance(e, WritingError):
+                failing_agent = "WritingAgent"
+            elif isinstance(e, CritiqueError):
+                failing_agent = "CritiqueAgent"
+            
+            progress_tracker.fail_workflow(str(e), failing_agent)
             
             # Use ModelRetry for retryable errors
             if "rate limit" in str(e).lower() or "timeout" in str(e).lower():
@@ -185,6 +228,17 @@ class OrchestratorAgent:
         Returns:
             ResearchOutput with comprehensive research findings
         """
+        # Start timing for research phase
+        research_start_time = time.time()
+        logger.info(f"🔍 Starting research phase for topic: '{topic}'")
+        
+        # Start research stage tracking
+        ctx.deps.progress_tracker.start_stage(
+            ProcessingStage.RESEARCHING,
+            "ResearchAgent",
+            f"Gathering research on '{topic}'"
+        )
+        
         try:
             # Update usage tracking
             ctx.deps.usage_tracking['research_calls'] += 1
@@ -200,13 +254,32 @@ class OrchestratorAgent:
                 deps=shared_deps
             )
             
+            # Log research completion time
+            research_time = time.time() - research_start_time
+            logger.info(f"✅ Research phase completed in {research_time:.2f} seconds")
+            
             # Track token usage (simplified tracking)
-            ctx.deps.usage_tracking['total_tokens'] += len(research_result.summary.split()) * 2
+            token_count = len(research_result.summary.split()) * 2
+            ctx.deps.usage_tracking['total_tokens'] += token_count
+            
+            # Complete research stage successfully
+            ctx.deps.progress_tracker.complete_stage(
+                success=True,
+                tokens_used=token_count,
+                api_calls=1
+            )
             
             return research_result
             
         except Exception as e:
             logger.error(f"Research delegation failed for topic '{topic}': {e}")
+            
+            # Complete research stage with failure
+            ctx.deps.progress_tracker.complete_stage(
+                success=False,
+                error_message=str(e),
+                api_calls=1
+            )
             
             if "rate limit" in str(e).lower():
                 raise ModelRetry(f"Research delegation failed due to rate limiting: {e}")
@@ -242,6 +315,23 @@ class OrchestratorAgent:
         Returns:
             BlogDraft with structured blog content
         """
+        # Start timing for writing phase
+        writing_start_time = time.time()
+        
+        # Determine stage and message based on whether this is a revision
+        if feedback and original_draft:
+            stage = ProcessingStage.REVISING
+            message = f"Revising blog draft based on feedback"
+            ctx.deps.usage_tracking['revision_cycles'] += 1
+            logger.info(f"✏️ Starting revision phase (cycle #{ctx.deps.usage_tracking['revision_cycles']})")
+        else:
+            stage = ProcessingStage.WRITING
+            message = f"Creating initial blog draft for '{research_data.topic}'"
+            logger.info(f"✍️ Starting initial writing phase for topic: '{research_data.topic}'")
+        
+        # Start writing/revising stage tracking
+        ctx.deps.progress_tracker.start_stage(stage, "WritingAgent", message)
+        
         try:
             # Update usage tracking
             ctx.deps.usage_tracking['writing_calls'] += 1
@@ -267,14 +357,34 @@ class OrchestratorAgent:
                     deps=shared_deps
                 )
             
+            # Log writing completion time
+            writing_time = time.time() - writing_start_time
+            phase_name = "revision" if feedback and original_draft else "initial writing"
+            logger.info(f"✅ {phase_name.capitalize()} phase completed in {writing_time:.2f} seconds")
+            
             # Track token usage (simplified tracking)
             total_content = f"{writing_result.title} {writing_result.introduction} {' '.join(writing_result.body_sections)} {writing_result.conclusion}"
-            ctx.deps.usage_tracking['total_tokens'] += len(total_content.split()) * 2
+            token_count = len(total_content.split()) * 2
+            ctx.deps.usage_tracking['total_tokens'] += token_count
+            
+            # Complete writing stage successfully
+            ctx.deps.progress_tracker.complete_stage(
+                success=True,
+                tokens_used=token_count,
+                api_calls=1
+            )
             
             return writing_result
             
         except Exception as e:
             logger.error(f"Writing delegation failed for topic '{research_data.topic}': {e}")
+            
+            # Complete writing stage with failure
+            ctx.deps.progress_tracker.complete_stage(
+                success=False,
+                error_message=str(e),
+                api_calls=1
+            )
             
             if "rate limit" in str(e).lower():
                 raise ModelRetry(f"Writing delegation failed due to rate limiting: {e}")
@@ -309,6 +419,17 @@ class OrchestratorAgent:
         Returns:
             CritiqueOutput with detailed feedback and approval status
         """
+        # Start timing for critique phase
+        critique_start_time = time.time()
+        logger.info(f"🔍 Starting critique phase for draft: '{blog_draft.title}'")
+        
+        # Start critique stage tracking
+        ctx.deps.progress_tracker.start_stage(
+            ProcessingStage.CRITIQUING,
+            "CritiqueAgent",
+            f"Reviewing draft: '{blog_draft.title}'"
+        )
+        
         try:
             # Update usage tracking
             ctx.deps.usage_tracking['critique_calls'] += 1
@@ -335,14 +456,33 @@ class OrchestratorAgent:
                 deps=shared_deps
             )
             
+            # Log critique completion time
+            critique_time = time.time() - critique_start_time
+            logger.info(f"✅ Critique phase completed in {critique_time:.2f} seconds (Quality: {critique_result.overall_quality:.1f}/10)")
+            
             # Track token usage (simplified tracking)
             feedback_text = " ".join([f.issue + " " + f.suggestion for f in critique_result.feedback_items])
-            ctx.deps.usage_tracking['total_tokens'] += len(feedback_text.split()) * 2
+            token_count = len(feedback_text.split()) * 2
+            ctx.deps.usage_tracking['total_tokens'] += token_count
+            
+            # Complete critique stage successfully
+            ctx.deps.progress_tracker.complete_stage(
+                success=True,
+                tokens_used=token_count,
+                api_calls=1
+            )
             
             return critique_result
             
         except Exception as e:
             logger.error(f"Critique delegation failed for draft '{blog_draft.title}': {e}")
+            
+            # Complete critique stage with failure
+            ctx.deps.progress_tracker.complete_stage(
+                success=False,
+                error_message=str(e),
+                api_calls=1
+            )
             
             if "rate limit" in str(e).lower():
                 raise ModelRetry(f"Critique delegation failed due to rate limiting: {e}")

@@ -163,8 +163,8 @@ class ResearchAgent:
             # Use Tavily client from dependencies
             search_response = deps.tavily_client.search(
                 query=topic,
-                search_depth="advanced",
-                max_results=10,
+                search_depth="basic",
+                max_results=7,
                 include_answer=True,
                 include_raw_content=False
             )

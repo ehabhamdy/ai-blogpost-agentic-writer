@@ -1,8 +1,56 @@
 """Core data models for the AI Blog Generation Team."""
 
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Callable, Any, Dict
 from enum import Enum
+import time
+from datetime import datetime
+
+
+class ProcessingStage(str, Enum):
+    """Enum for tracking the current processing stage of blog generation."""
+    INITIALIZING = "initializing"
+    RESEARCHING = "researching"
+    WRITING = "writing"
+    CRITIQUING = "critiquing"
+    REVISING = "revising"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class ProgressStatus(BaseModel):
+    """Model for tracking progress status throughout the workflow."""
+    stage: ProcessingStage = Field(description="Current processing stage")
+    message: str = Field(description="Human-readable status message")
+    timestamp: datetime = Field(default_factory=datetime.now, description="When this status was set")
+    agent_name: Optional[str] = Field(default=None, description="Name of the agent currently processing")
+    progress_percentage: float = Field(ge=0, le=100, description="Estimated progress percentage")
+    error_details: Optional[str] = Field(default=None, description="Error details if stage is FAILED")
+
+
+class ProcessingMetrics(BaseModel):
+    """Model for tracking processing time and performance metrics."""
+    stage_name: str = Field(description="Name of the processing stage")
+    start_time: datetime = Field(description="When the stage started")
+    end_time: Optional[datetime] = Field(default=None, description="When the stage completed")
+    duration_seconds: Optional[float] = Field(default=None, description="Duration in seconds")
+    agent_name: str = Field(description="Name of the agent that handled this stage")
+    success: bool = Field(default=True, description="Whether the stage completed successfully")
+    error_message: Optional[str] = Field(default=None, description="Error message if stage failed")
+    tokens_used: Optional[int] = Field(default=None, description="Number of tokens used in this stage")
+    api_calls: Optional[int] = Field(default=None, description="Number of API calls made in this stage")
+
+
+class WorkflowProgress(BaseModel):
+    """Model for tracking overall workflow progress and metrics."""
+    topic: str = Field(description="The blog topic being processed")
+    current_status: ProgressStatus = Field(description="Current progress status")
+    stage_metrics: List[ProcessingMetrics] = Field(default_factory=list, description="Metrics for each completed stage")
+    total_start_time: datetime = Field(default_factory=datetime.now, description="When the workflow started")
+    total_end_time: Optional[datetime] = Field(default=None, description="When the workflow completed")
+    total_duration_seconds: Optional[float] = Field(default=None, description="Total workflow duration")
+    revision_count: int = Field(default=0, description="Number of revision cycles completed")
+    final_quality_score: Optional[float] = Field(default=None, description="Final quality score if completed")
 
 
 class ResearchFinding(BaseModel):
@@ -60,3 +108,4 @@ class BlogGenerationResult(BaseModel):
     revision_count: int = Field(description="Number of revision cycles")
     total_processing_time: float = Field(description="Total time in seconds")
     quality_score: float = Field(description="Final quality assessment")
+    workflow_progress: WorkflowProgress = Field(description="Complete workflow progress and metrics")
