@@ -23,7 +23,6 @@ class CritiqueAgent:
         """Initialize the Critique Agent with a model."""
         self.agent = Agent(
             model=model,
-            retries=2,
             output_type=CritiqueOutput,
             system_prompt="""You are an editor providing simple, actionable feedback on blog posts.
             
