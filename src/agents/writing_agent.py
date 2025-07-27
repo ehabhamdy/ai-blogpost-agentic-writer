@@ -43,14 +43,16 @@ class WritingAgent:
             - Incorporating research findings seamlessly into the narrative
             - Maintaining reader engagement throughout
             - Creating compelling titles and smooth transitions
+            - Writing comprehensive content (aim for 800-1200 words total)
             
             IMPORTANT: Your output MUST include these required fields:
             - title: A compelling blog post title
-            - introduction: An engaging opening paragraph
-            - body_sections: A list of content sections for the main body
-            - conclusion: A closing paragraph that summarizes key points
+            - introduction: An engaging opening paragraph (150-200 words)
+            - body_sections: A list of content sections for the main body (aim for 3-5 sections, 150-250 words each)
+            - conclusion: A closing paragraph that summarizes key points (100-150 words)
+            - word_count: Total word count of all content combined
             
-            Note: The word count will be calculated automatically by the system.
+            WORD COUNT CALCULATION: Count all words in title + introduction + all body_sections + conclusion.
             
             Use the available tools to structure content and enhance readability."""
         )
@@ -95,12 +97,15 @@ class WritingAgent:
                 The research includes {len(research_data.findings)} findings with a confidence level of {research_data.confidence_level:.2f}.
                 Research summary: {research_data.summary}
                 
-                Steps to follow:
+                REQUIREMENTS:
                 1. Use structure_content tool to organize the research findings
-                2. Create an engaging blog post (800-1200 words) incorporating the structured content
-                3. Ensure proper flow between introduction, body sections, and conclusion
+                2. Create an engaging blog post with 800-1200 words total
+                3. Structure: Introduction (150-200 words) + Body sections (3-5 sections, 150-250 words each) + Conclusion (100-150 words)
+                4. MUST include word_count field with accurate count of all text
+                5. Ensure proper flow between introduction, body sections, and conclusion
                 
-                Create a blog post that is approximately 800-1200 words.""",
+                WORD COUNT CALCULATION: Count words in title + introduction + all body_sections + conclusion.
+                The word_count field is REQUIRED and must be accurate.""",
                 deps=context
             )
             
@@ -124,8 +129,28 @@ class WritingAgent:
             
             # Always calculate word count programmatically for accuracy
             all_text = f"{draft.title} {draft.introduction} {' '.join(draft.body_sections)} {draft.conclusion}"
-            draft.word_count = len(all_text.split())
-            logger.info(f"Calculated word count: {draft.word_count}")
+            calculated_word_count = len(all_text.split())
+            
+            # Ensure word_count field is set
+            if not hasattr(draft, 'word_count') or draft.word_count is None:
+                logger.warning("BlogDraft missing word_count field, setting it now")
+                draft.word_count = calculated_word_count
+            else:
+                # Update with calculated value for accuracy
+                draft.word_count = calculated_word_count
+            
+            logger.info(f"Final word count set: {draft.word_count}")
+            
+            # Verify all required fields are present
+            required_fields = ['title', 'introduction', 'body_sections', 'conclusion', 'word_count']
+            for field in required_fields:
+                if not hasattr(draft, field) or getattr(draft, field) is None:
+                    logger.error(f"BlogDraft missing required field: {field}")
+                    raise ValidationError(
+                        f"BlogDraft missing required field: {field}",
+                        field_name=field,
+                        invalid_value=None
+                    )
             
             return draft
             
@@ -184,12 +209,19 @@ class WritingAgent:
                 Original Introduction: {original_draft.introduction}
                 Original Body Sections: {len(original_draft.body_sections)} sections
                 Original Conclusion: {original_draft.conclusion}
+                Original Word Count: {original_draft.word_count}
                 
                 Feedback to address: {feedback}
                 
-                You have access to research data through the context. Use the available tools 
-                to support your revisions and ensure accuracy. Maintain the overall structure 
-                while improving based on the feedback.""",
+                REQUIREMENTS:
+                1. Address all feedback while maintaining 800-1200 word target
+                2. Use available tools to support your revisions and ensure accuracy
+                3. Maintain the overall structure while improving based on the feedback
+                4. MUST include accurate word_count field counting all text
+                5. Ensure comprehensive content that meets word count expectations
+                
+                WORD COUNT CALCULATION: Count words in title + introduction + all body_sections + conclusion.
+                The word_count field is REQUIRED and must be accurate.""",
                 deps=context
             )
             
@@ -216,8 +248,28 @@ class WritingAgent:
             
             # Always calculate word count programmatically for accuracy
             all_text = f"{revised_draft.title} {revised_draft.introduction} {' '.join(revised_draft.body_sections)} {revised_draft.conclusion}"
-            revised_draft.word_count = len(all_text.split())
-            logger.info(f"Calculated word count for revised draft: {revised_draft.word_count}")
+            calculated_word_count = len(all_text.split())
+            
+            # Ensure word_count field is set
+            if not hasattr(revised_draft, 'word_count') or revised_draft.word_count is None:
+                logger.warning("Revised BlogDraft missing word_count field, setting it now")
+                revised_draft.word_count = calculated_word_count
+            else:
+                # Update with calculated value for accuracy
+                revised_draft.word_count = calculated_word_count
+            
+            logger.info(f"Final revised word count set: {revised_draft.word_count}")
+            
+            # Verify all required fields are present
+            required_fields = ['title', 'introduction', 'body_sections', 'conclusion', 'word_count']
+            for field in required_fields:
+                if not hasattr(revised_draft, field) or getattr(revised_draft, field) is None:
+                    logger.error(f"Revised BlogDraft missing required field: {field}")
+                    raise ValidationError(
+                        f"Revised BlogDraft missing required field: {field}",
+                        field_name=field,
+                        invalid_value=None
+                    )
             
             return revised_draft
             

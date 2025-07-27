@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 Integration test for Research Agent.
-Run this script with proper API keys set to test the full functionality.
 
 Required environment variables:
 - OPENAI_API_KEY: OpenAI API key
@@ -67,7 +66,7 @@ async def test_research_agent():
             print(f"  - Confidence level: {result.confidence_level}")
             print(f"  - Summary: {result.summary[:100]}...")
             
-            # Show a few findings
+            # Show sample findings
             print("\n📋 Sample findings:")
             for i, finding in enumerate(result.findings[:3]):
                 print(f"  {i+1}. [{finding.category}] {finding.fact[:80]}...")
@@ -79,6 +78,8 @@ async def test_research_agent():
             
     except Exception as e:
         print(f"❌ Integration test failed: {e}")
+        import traceback
+        traceback.print_exc()
         raise
 
 
